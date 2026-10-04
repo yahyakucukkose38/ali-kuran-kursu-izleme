@@ -1,0 +1,61 @@
+name: Canlı site izleme
+
+# Yaz Kur'an Kursu uygulamasını (https://ali-kuran-kursu.ihyadijital.com) her 10 dakikada denetler.
+# Bir adım başarısız olursa GitHub depo sahibine e-posta gönderir (Ayarlar → Bildirimler → Actions).
+# Bu depoda kod ya da veri yoktur; ana proje gizli depodadır.
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+    inputs:
+      bildirim_denemesi:
+        description: 'Bildirim e-postasının ulaştığını görmek için bilerek başarısız ol'
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: izleme
+  cancel-in-progress: false
+
+jobs:
+  denetim:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SITE: https://ali-kuran-kursu.ihyadijital.com
+    steps:
+      - name: Bildirim denemesi
+        if: ${{ inputs.bildirim_denemesi }}
+        run: |
+          echo "::error title=Bildirim denemesi::Bu bir denemedir; site çalışıyor. E-posta geldiyse izleme uyarıları da gelir."
+          exit 1
+
+      - name: API ve veritabanı
+        run: |
+          for deneme in 1 2 3; do
+            if yanit=$(curl -fsS -m 20 "$SITE/api/v1/health") && echo "$yanit" | grep -q '"db":"ok"'; then
+              echo "Sağlıklı: $yanit"
+              exit 0
+            fi
+            echo "Deneme $deneme başarısız; 30 sn sonra yeniden"
+            sleep 30
+          done
+          echo "::error title=Site çalışmıyor::API ya da veritabanı 3 denemede yanıt vermedi ($SITE)"
+          exit 1
+
+      - name: Giriş sayfası
+        run: |
+          curl -fsS -o /dev/null -m 20 "$SITE/giris" || { echo "::error title=Giriş sayfası açılmıyor::$SITE/giris"; exit 1; }
+
+      - name: HTTPS sertifikası
+        run: |
+          host=${SITE#https://}
+          bitis=$(echo | openssl s_client -servername "$host" -connect "$host:443" 2>/dev/null | openssl x509 -noout -enddate | cut -d= -f2)
+          kalan=$(( ( $(date -d "$bitis" +%s) - $(date +%s) ) / 86400 ))
+          echo "Sertifikanın bitmesine $kalan gün var"
+          if [ "$kalan" -lt 14 ]; then
+            echo "::error title=Sertifika bitiyor::$kalan gün kaldı; sunucu sertifikayı kendiliğinden yenileyemiyor olabilir"
+            exit 1
+          fi
